@@ -5,6 +5,13 @@ from flask import Flask, jsonify
 import threading
 import time
 from collections import defaultdict
+import os
+
+# RabbitMQ connection parameters - read from environment variables
+RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'localhost')  # Default to localhost if not set
+RABBITMQ_USER = os.environ.get('RABBITMQ_USER', 'guest')      # Default to guest if not set
+RABBITMQ_PASSWORD = os.environ.get('RABBITMQ_PASSWORD', 'guest')
+RABBITMQ_QUEUE = os.environ.get('RABBITMQ_QUEUE', 'order_queue')
 
 app = Flask(__name__)
 
