@@ -5,13 +5,13 @@ from flask import Flask, jsonify
 import threading
 import time
 from collections import defaultdict
-import os  # ADD THIS for environment variables
-from datetime import datetime  # ADD THIS for timestamps
+import os
+from datetime import datetime
 
-# Get port from environment variable (Azure sets this automatically)
+# Get port from environment variable
 PORT = int(os.environ.get('PORT', 8000))
 
-# RabbitMQ connection parameters - use environment variables (SECURITY FIX)
+# RabbitMQ connection parameters
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', '20.163.105.55')
 RABBITMQ_USER = os.environ.get('RABBITMQ_USER', 'newuser')
 RABBITMQ_PASSWORD = os.environ.get('RABBITMQ_PASSWORD', 'newpassword')
@@ -23,12 +23,12 @@ app = Flask(__name__)
 orders = []
 products = defaultdict(lambda: {"count": 0, "revenue": 0, "quantity": 0})
 
-# Thread safety for Gunicorn multiple workers
+# Thread safety for Gunicorn
 _consumer_started = False
 _consumer_lock = threading.Lock()
 
 def callback(ch, method, properties, body):
-    """Process each order - this runs for EVERY message"""
+    """Process each order"""
     try:
         order = json.loads(body)
         print(f"\n✅ [{datetime.now().isoformat()}] Received: {order['product']['name']} x{order['quantity']}")
@@ -40,70 +40,60 @@ def callback(ch, method, properties, body):
         products[name]["revenue"] += order["totalPrice"]
         products[name]["quantity"] += order["quantity"]
         
-        print(f"   Total orders: {len(orders)}")
+        print(f"   Total orders processed: {len(orders)}")
+        print(f"   Products tracked: {list(products.keys())}")
         
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON Error: {e}")
+    except KeyError as e:
+        print(f"❌ Missing key: {e}")
     except Exception as e:
         print(f"❌ Error: {e}")
 
 def connect_to_rabbitmq():
-    """Keep trying to connect and consume messages FOREVER"""
+    """Connect and consume messages continuously"""
     while True:
         try:
             print(f"\n🔄 [{datetime.now().isoformat()}] Connecting to RabbitMQ at {RABBITMQ_HOST}...")
-            print(f"   Using user: {RABBITMQ_USER}, queue: {RABBITMQ_QUEUE}")
             
-            # USE ENVIRONMENT VARIABLES HERE (NOT HARDCODED)
             credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
             parameters = pika.ConnectionParameters(
-                host=RABBITMQ_HOST,  # Use env var
+                host=RABBITMQ_HOST,
                 credentials=credentials,
                 heartbeat=600,
                 blocked_connection_timeout=300
             )
             
             connection = pika.BlockingConnection(parameters)
-            print("✅ TCP Connection established")
-            
             channel = connection.channel()
-            print("✅ Channel created")
             
-            # Use env var for queue name
-            queue = channel.queue_declare(queue=RABBITMQ_QUEUE, durable=False, passive=False)
-            print(f"✅ Queue declared: {queue.method.queue}")
-            print(f"   Message count: {queue.method.message_count}")
-            print(f"   Consumer count: {queue.method.consumer_count}")
+            # Declare queue and check message count
+            queue = channel.queue_declare(queue=RABBITMQ_QUEUE, durable=False)
+            msg_count = queue.method.message_count
+            print(f"✅ Connected to queue '{RABBITMQ_QUEUE}'")
+            print(f"📊 Messages waiting in queue: {msg_count}")
             
-            # Check if any messages are waiting
-            method_frame, header_frame, body = channel.basic_get(queue=RABBITMQ_QUEUE, auto_ack=False)
-            if method_frame:
-                print(f"⚠️  Found {queue.method.message_count} messages waiting!")
-                # Process message
-                callback(channel, method_frame, header_frame, body)
-                channel.basic_ack(delivery_tag=method_frame.delivery_tag)
-            else:
-                print(f"ℹ️ No messages waiting in queue")
-            
-            print("🎯 Setting up consumer...")
+            # Set up consumer - this processes ALL messages automatically
             channel.basic_consume(
-                queue=RABBITMQ_QUEUE,  # Use env var
+                queue=RABBITMQ_QUEUE,
                 on_message_callback=callback,
                 auto_ack=True
             )
             
-            print(f"🎯 [{datetime.now().isoformat()}] Connected! Waiting for orders...")
+            print(f"🎯 [{datetime.now().isoformat()}] Consumer active. Processing messages...")
+            
+            # This blocks and processes messages forever
             channel.start_consuming()
             
         except pika.exceptions.AMQPConnectionError as e:
             print(f"⚠️  Connection lost: {e}")
-            print("Reconnecting in 5 seconds...")
             time.sleep(5)
         except Exception as e:
             print(f"⚠️  Error: {type(e).__name__}: {e}")
-            print("Reconnecting in 5 seconds...")
             time.sleep(5)
 
 def start_consumer_once():
-    """Ensure only one consumer thread runs with Gunicorn"""
+    """Start only one consumer thread"""
     global _consumer_started
     with _consumer_lock:
         if not _consumer_started:
@@ -112,7 +102,7 @@ def start_consumer_once():
             _consumer_started = True
             print(f"✅ [{datetime.now().isoformat()}] Consumer thread started")
 
-# API Endpoints (unchanged)
+# API Endpoints
 @app.route('/health')
 def health():
     return jsonify({
@@ -122,12 +112,14 @@ def health():
         "products": list(products.keys()),
         "rabbitmq_config": {
             "host": RABBITMQ_HOST,
-            "queue": RABBITMQ_QUEUE
+            "queue": RABBITMQ_QUEUE,
+            "user": RABBITMQ_USER
         }
     })
 
 @app.route('/orders')
 def get_orders():
+    """Return all processed orders"""
     return jsonify(orders)
 
 @app.route('/analytics/summary')
@@ -171,9 +163,9 @@ def top_products():
     return jsonify(result)
 
 if __name__ == '__main__':
-    # Start RabbitMQ consumer once
+    # Start consumer once
     start_consumer_once()
     
-    # Start Flask on the Azure-assigned port
+    # Start Flask
     print(f"🚀 [{datetime.now().isoformat()}] Starting on port {PORT}")
     app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
