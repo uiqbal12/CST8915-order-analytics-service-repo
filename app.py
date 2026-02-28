@@ -7,6 +7,7 @@ import time
 from collections import defaultdict
 import os
 from datetime import datetime
+import multiprocessing
 
 # Get port from environment variable
 PORT = int(os.environ.get('PORT', 8000))
@@ -23,7 +24,7 @@ app = Flask(__name__)
 orders = []
 products = defaultdict(lambda: {"count": 0, "revenue": 0, "quantity": 0})
 
-# Thread safety for Gunicorn
+# Flag to track if consumer is running in this process
 _consumer_started = False
 _consumer_lock = threading.Lock()
 
@@ -41,12 +42,7 @@ def callback(ch, method, properties, body):
         products[name]["quantity"] += order["quantity"]
         
         print(f"   Total orders processed: {len(orders)}")
-        print(f"   Products tracked: {list(products.keys())}")
         
-    except json.JSONDecodeError as e:
-        print(f"❌ JSON Error: {e}")
-    except KeyError as e:
-        print(f"❌ Missing key: {e}")
     except Exception as e:
         print(f"❌ Error: {e}")
 
@@ -55,13 +51,16 @@ def connect_to_rabbitmq():
     while True:
         try:
             print(f"\n🔄 [{datetime.now().isoformat()}] Connecting to RabbitMQ at {RABBITMQ_HOST}...")
+            print(f"   Using user: {RABBITMQ_USER}, queue: {RABBITMQ_QUEUE}")
             
             credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
             parameters = pika.ConnectionParameters(
                 host=RABBITMQ_HOST,
                 credentials=credentials,
                 heartbeat=600,
-                blocked_connection_timeout=300
+                blocked_connection_timeout=300,
+                connection_attempts=3,
+                retry_delay=2
             )
             
             connection = pika.BlockingConnection(parameters)
@@ -70,17 +69,17 @@ def connect_to_rabbitmq():
             # Declare queue and check message count
             queue = channel.queue_declare(queue=RABBITMQ_QUEUE, durable=False)
             msg_count = queue.method.message_count
-            print(f"✅ Connected to queue '{RABBITMQ_QUEUE}'")
+            print(f"✅ [{datetime.now().isoformat()}] Connected to queue '{RABBITMQ_QUEUE}'")
             print(f"📊 Messages waiting in queue: {msg_count}")
             
-            # Set up consumer - this processes ALL messages automatically
+            # Set up consumer
             channel.basic_consume(
                 queue=RABBITMQ_QUEUE,
                 on_message_callback=callback,
                 auto_ack=True
             )
             
-            print(f"🎯 [{datetime.now().isoformat()}] Consumer active. Processing messages...")
+            print(f"🎯 [{datetime.now().isoformat()}] Consumer active. Waiting for orders...")
             
             # This blocks and processes messages forever
             channel.start_consuming()
@@ -92,34 +91,45 @@ def connect_to_rabbitmq():
             print(f"⚠️  Error: {type(e).__name__}: {e}")
             time.sleep(5)
 
-def start_consumer_once():
-    """Start only one consumer thread"""
+def start_consumer():
+    """Start consumer in a background thread"""
     global _consumer_started
     with _consumer_lock:
         if not _consumer_started:
             consumer_thread = threading.Thread(target=connect_to_rabbitmq, daemon=True)
             consumer_thread.start()
             _consumer_started = True
-            print(f"✅ [{datetime.now().isoformat()}] Consumer thread started")
+            print(f"✅ [{datetime.now().isoformat()}] Consumer thread started in process {os.getpid()}")
+        else:
+            print(f"ℹ️ [{datetime.now().isoformat()}] Consumer already running in process {os.getpid()}")
 
-# API Endpoints
+# This is the key fix - run consumer when Gunicorn loads the module
+print(f"🚀 [{datetime.now().isoformat()}] Loading app module in process {os.getpid()}")
+
+# Start consumer immediately when module loads (before Gunicorn forks)
+# But only in the main process, not in workers
+if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
+    # This runs when Gunicorn first loads the module
+    print(f"📌 Starting consumer in main process {os.getpid()}")
+    start_consumer()
+
 @app.route('/health')
 def health():
     return jsonify({
         "status": "ok",
         "timestamp": datetime.now().isoformat(),
+        "process_id": os.getpid(),
+        "consumer_started": _consumer_started,
         "orders_processed": len(orders),
         "products": list(products.keys()),
         "rabbitmq_config": {
             "host": RABBITMQ_HOST,
-            "queue": RABBITMQ_QUEUE,
-            "user": RABBITMQ_USER
+            "queue": RABBITMQ_QUEUE
         }
     })
 
 @app.route('/orders')
 def get_orders():
-    """Return all processed orders"""
     return jsonify(orders)
 
 @app.route('/analytics/summary')
@@ -162,10 +172,8 @@ def top_products():
         })
     return jsonify(result)
 
+# This is for local development only
 if __name__ == '__main__':
-    # Start consumer once
-    start_consumer_once()
-    
-    # Start Flask
-    print(f"🚀 [{datetime.now().isoformat()}] Starting on port {PORT}")
+    print(f"🚀 Starting in development mode on port {PORT}")
+    start_consumer()
     app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
