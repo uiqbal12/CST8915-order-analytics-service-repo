@@ -49,36 +49,51 @@ def connect_to_rabbitmq():
     """Keep trying to connect and consume messages FOREVER"""
     while True:
         try:
-            print(f"\n🔄 [{datetime.now().isoformat()}] Connecting to RabbitMQ at {RABBITMQ_HOST}...")
+            print("\n🔄 Connecting to RabbitMQ...")
             
-            credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
+            # Connect with credentials
+            credentials = pika.PlainCredentials('newuser', 'newpassword')
             parameters = pika.ConnectionParameters(
-                host=RABBITMQ_HOST,
+                host='20.163.105.55',
                 credentials=credentials,
                 heartbeat=600,
                 blocked_connection_timeout=300
             )
             
             connection = pika.BlockingConnection(parameters)
+            print("✅ TCP Connection established")
+            
             channel = connection.channel()
+            print("✅ Channel created")
             
-            channel.queue_declare(queue=RABBITMQ_QUEUE, durable=False)
+            # Make sure queue exists - ADD DEBUG HERE
+            queue = channel.queue_declare(queue='order_queue', durable=False, passive=False)
+            print(f"✅ Queue declared: {queue.method.queue}")
+            print(f"   Message count: {queue.method.message_count}")
+            print(f"   Consumer count: {queue.method.consumer_count}")
             
-            print(f"🎯 [{datetime.now().isoformat()}] Connected! Waiting for orders...")
+            # Check if any messages are waiting
+            method_frame, header_frame, body = channel.basic_get(queue='order_queue', auto_ack=False)
+            if method_frame:
+                print(f"⚠️  There IS a message waiting! Attempting to process...")
+                callback(channel, method_frame, header_frame, body)
+                channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+            else:
+                print("ℹ️ No messages waiting in queue")
             
+            print("🎯 Setting up consumer...")
             channel.basic_consume(
-                queue=RABBITMQ_QUEUE,
+                queue='order_queue',
                 on_message_callback=callback,
                 auto_ack=True
             )
             
+            print("🎯 Connected! Waiting for orders... Press Ctrl+C to stop")
             channel.start_consuming()
             
-        except pika.exceptions.AMQPConnectionError as e:
-            print(f"⚠️  Connection lost: {e}")
-            time.sleep(5)
         except Exception as e:
-            print(f"⚠️  Unexpected error: {e}")
+            print(f"⚠️  Error: {type(e).__name__}: {e}")
+            print("Reconnecting in 5 seconds...")
             time.sleep(5)
 
 def start_consumer_once():
