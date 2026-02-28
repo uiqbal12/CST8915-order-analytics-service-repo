@@ -47,50 +47,40 @@ def connect_to_rabbitmq():
     """Keep trying to connect and consume messages FOREVER"""
     while True:
         try:
-            print("\n🔄 Connecting to RabbitMQ...")
+            print(f"\n🔄 [{datetime.now().isoformat()}] Connecting to RabbitMQ at {RABBITMQ_HOST}:5672...")
+            print(f"   Using user: {RABBITMQ_USER}, queue: {RABBITMQ_QUEUE}")
             
-            # Connect with credentials
-            credentials = pika.PlainCredentials('newuser', 'newpassword')
+            # USE ENVIRONMENT VARIABLES (not hardcoded)
+            credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
             parameters = pika.ConnectionParameters(
-                host='20.38.3.244',
+                host=RABBITMQ_HOST,  # Use env var
                 credentials=credentials,
                 heartbeat=600,
-                blocked_connection_timeout=300
+                blocked_connection_timeout=300,
+                connection_attempts=3,
+                retry_delay=2
             )
             
             connection = pika.BlockingConnection(parameters)
             channel = connection.channel()
             
-            # Make sure queue exists
-            channel.queue_declare(queue='order_queue', durable=False)
+            # Use env var for queue name
+            channel.queue_declare(queue=RABBITMQ_QUEUE, durable=False)
             
-            # Clear any existing messages (optional - remove if you want to keep old messages)
-            # channel.queue_purge(queue='order_queue')
+            print(f"🎯 [{datetime.now().isoformat()}] SUCCESS: Connected to RabbitMQ!")
             
-            print("🎯 Connected! Waiting for orders... Press Ctrl+C to stop")
-            
-            # Start consuming - this blocks and processes messages one by one
-            # The callback runs for EACH message
             channel.basic_consume(
-                queue='order_queue',
+                queue=RABBITMQ_QUEUE,  # Use env var
                 on_message_callback=callback,
-                auto_ack=True  # Automatically confirm message processing
+                auto_ack=True
             )
-            
-            # This will keep running forever, processing messages as they arrive
             channel.start_consuming()
             
         except pika.exceptions.AMQPConnectionError as e:
-            print(f"⚠️  Connection lost: {e}")
-            print("Reconnecting in 5 seconds...")
-            time.sleep(5)
-        except pika.exceptions.ChannelClosedByBroker as e:
-            print(f"⚠️  Channel error: {e}")
-            print("Reconnecting in 5 seconds...")
+            print(f"❌ Connection failed: {e}")
             time.sleep(5)
         except Exception as e:
-            print(f"⚠️  Unexpected error: {e}")
-            print("Reconnecting in 5 seconds...")
+            print(f"❌ Unexpected error: {e}")
             time.sleep(5)
 
 # API Endpoints
